@@ -339,7 +339,7 @@ class Zappa(object):
             os.makedirs(venv_site_packages_dir)
 
         # Copy zappa* to the new virtualenv
-        zappa_things = [z for z in os.listdir(current_site_packages_dir) if z.lower()[:5] == 'zappa']
+        zappa_things = [z for z in os.listdir(current_site_packages_dir) if z.lower()[:5] == 'zappa' and z.lower()[-9:] != ".egg-link" ]
         for z in zappa_things:
             copytree(os.path.join(current_site_packages_dir, z), os.path.join(venv_site_packages_dir, z))
 
