@@ -93,6 +93,7 @@ class ZappaCLI(object):
     debug = None
     prebuild_script = None
     project_name = None
+    project_directory = None
     profile_name = None
     lambda_arn = None
     lambda_name = None
@@ -1858,6 +1859,8 @@ class ZappaCLI(object):
         else:
             self.project_name = slugify.slugify(os.getcwd().split(os.sep)[-1])[:15]
 
+        self.project_directory = self.stage_config.get('project_directory', '/tmp/{0!s}'.format(self.project_name))
+
         # The name of the actual AWS Lambda function, ex, 'helloworld-dev'
         # Assume that we already have have validated the name beforehand.
         # Related:  https://github.com/Miserlou/Zappa/pull/664
@@ -2151,6 +2154,7 @@ class ZappaCLI(object):
             # We can be environment-aware
             settings_s = settings_s + "API_STAGE='{0!s}'\n".format((self.api_stage))
             settings_s = settings_s + "PROJECT_NAME='{0!s}'\n".format((self.project_name))
+            settings_s = settings_s + "PROJECT_DIRECTORY='{0!s}'\n".format(self.project_directory)
 
             if self.settings_file:
                 settings_s = settings_s + "SETTINGS_FILE='{0!s}'\n".format((self.settings_file))

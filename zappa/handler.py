@@ -149,7 +149,7 @@ class LambdaHandler(object):
         """
         Puts the project files from S3 in /tmp and adds to path
         """
-        project_folder = '/tmp/{0!s}'.format(self.settings.PROJECT_NAME)
+        project_folder = getattr(self.settings, 'PROJECT_DIRECTORY', '/tmp/{0!s}'.format(self.settings.PROJECT_NAME))
         if not os.path.isdir(project_folder):
             # The project folder doesn't exist in this cold lambda, get it from S3
             if not self.session:

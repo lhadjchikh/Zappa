@@ -647,6 +647,7 @@ to change Zappa's behavior. Use these at your own risk!
         "memory_size": 512, // Lambda function memory in MB. Default 512.
         "prebuild_script": "your_module.your_function", // Function to execute before uploading code
         "profile_name": "your-profile-name", // AWS profile credentials to use. Default 'default'.
+        "project_directory": "/tmp/my-project", // The directory to unzip your project to. Defaults to `/tmp/%(slugified-project-name)s`.
         "project_name": "MyProject", // The name of the project as it appears on AWS. Defaults to a slugified `pwd`.
         "remote_env": "s3://my-project-config-files/filename.json", // optional file in s3 bucket containing a flat json object which will be used to set custom environment variables.
         "role_name": "MyLambdaRole", // Name of Zappa execution role. Default <project_name>-<env>-ZappaExecutionRole. To use a different, pre-existing policy, you must also set manage_roles to false.
