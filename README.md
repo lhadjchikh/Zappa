@@ -36,6 +36,8 @@
   - [Task Sources](#task-sources)
   - [Direct Invocation](#direct-invocation)
   - [Restrictions](#restrictions)
+  - [Running Tasks in a VPC](#running-tasks-in-a-vpc)
+  - [Responses](#responses)
 - [Advanced Settings](#advanced-settings)
     - [YAML Settings](#yaml-settings)
 - [Advanced Usage](#advanced-usage)
@@ -167,6 +169,8 @@ or for Django:
     }
 }
 ```
+
+_Psst: If you're deploying a Django application with Zappa for the first time, you might want to read Edgar Roman's [Django Zapp Guide](https://edgarroman.github.io/zappa-django-guide/)._
 
 You can define as many stages as your like - we recommend having _dev_, _staging_, and _production_.
 
@@ -533,11 +537,11 @@ run(your_function, args, kwargs, service='sns') # Using SNS
 ### Remote Invocations
 
 By default, Zappa will use lambda's current function name and current AWS region. If you wish to invoke a lambda with
-  a different function name/region or invoke your lambda from outside of lambda, you must specify the 
-  `remote_aws_lambda_function_name` and `remote_aws_region` arguments so that the application knows which function and 
-  region to use. For example, if some part of our pizza making application had to live on an EC2 instance, but we 
+  a different function name/region or invoke your lambda from outside of lambda, you must specify the
+  `remote_aws_lambda_function_name` and `remote_aws_region` arguments so that the application knows which function and
+  region to use. For example, if some part of our pizza making application had to live on an EC2 instance, but we
   wished to call the make_pie() function on its own Lambda instance, we would do it as follows:
-  
+
  ```python
 @task(remote_aws_lambda_function_name='pizza-pie-prod', remote_aws_region='us-east-1')
 def make_pie():
@@ -560,6 +564,72 @@ The following restrictions to this feature apply:
 
 All of this code is still backwards-compatible with non-Lambda environments - it simply executes in a blocking fashion and returns the result.
 
+### Running Tasks in a VPC
+
+If you're running Zappa in a VPC you'll need to configure your subnets to allow your lambda to communicate with services inside your VPC as well as the public Internet. A minimal setup requires two subnets.
+
+In __subnet-a__:
+* Create a NAT
+* Create an Internet gateway
+* In the route table, create a route pointing the Internet gateway to 0.0.0.0/0.
+
+In __subnet-b__:
+* Place your lambda function
+* In the route table, create a route pointing the NAT that belongs to __subnet-a__ to 0.0.0.0/0.
+
+You can place your lambda in multiple subnets that are configured the same way as __subnet-b__ for high availability.
+
+Some helpful resources are [this tutorial](https://gist.github.com/reggi/dc5f2620b7b4f515e68e46255ac042a7) and [this AWS doc page](http://docs.aws.amazon.com/lambda/latest/dg/vpc.html#vpc-internet).
+
+### Responses
+
+It is possible to capture the responses of Asynchronous tasks.
+
+Zappa uses DynamoDB as the backend for these.
+
+To capture responses, you must configure a `async_response_table` in `zappa_settings`. This is the DynamoDB table name. Then, when decorating with `@task`, pass `capture_response=True`.
+
+Async responses are assigned a `response_id`. This is returned as a property of the `LambdaAsyncResponse` (or `SnsAsyncResponse`) object that is returned by the `@task` decorator.
+
+Example:
+
+```python
+from zappa.async import task, get_async_response
+from flask import Flask, make_response, abort, url_for, redirect, request, jsonify
+from time import sleep
+
+app = Flask(__name__)
+
+@app.route('/payload')
+def payload():
+    delay = request.args.get('delay', 60)
+    x = longrunner(delay)
+    return redirect(url_for('response', response_id=x.response_id))
+
+@app.route('/async-response/<response_id>')
+def response(response_id):
+    response = get_async_response(response_id)
+    if response is None:
+        abort(404)
+
+    if response['status'] == 'complete':
+        return jsonify(response['response'])
+
+    sleep(5)
+
+    return "Not yet ready. Redirecting.", 302, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Location': url_for('response', response_id=response_id, backoff=5)),
+        'X-redirect-reason': "Not yet ready.",
+    }
+
+@task(capture_response=True)
+def longrunner(delay):
+    sleep(float(delay))
+    return {'MESSAGE': "It took {} seconds to generate this.".format(delay)}
+
+```
+
 ## Advanced Settings
 
 There are other settings that you can define in your local settings
@@ -575,7 +645,11 @@ to change Zappa's behavior. Use these at your own risk!
         "assume_policy": "my_assume_policy.json", // optional, IAM assume policy JSON file
         "attach_policy": "my_attach_policy.json", // optional, IAM attach policy JSON file
         "async_source": "sns", // Source of async tasks. Defaults to "lambda"
-        "async_resources": true, // Create the SNS topic to use. Defaults to true.
+        "async_resources": true, // Create the SNS topic and DynamoDB table to use. Defaults to true.
+        "async_response_table": "your_dynamodb_table_name",  // the DynamoDB table name to use for captured async responses; defaults to None (can't capture)
+        "async_response_table_read_capacity": 1,  // DynamoDB table read capacity; defaults to 1
+        "async_response_table_write_capacity": 1,  // DynamoDB table write capacity; defaults to 1
+        "aws_endpoint_urls": { "aws_service_name": "endpoint_url" }, // a dictionary of endpoint_urls that emulate the appropriate service.  Usually used for testing.
         "aws_environment_variables" : {"your_key": "your_value"}, // A dictionary of environment variables that will be available to your deployed app via AWS Lambdas native environment variables. See also "environment_variables" and "remote_env" . Default {}.
         "aws_kms_key_arn": "your_aws_kms_key_arn", // Your AWS KMS Key ARN
         "aws_region": "aws-region-name", // optional, uses region set in profile or environment variables if not set here,
@@ -656,8 +730,12 @@ to change Zappa's behavior. Use these at your own risk!
         "s3_bucket": "dev-bucket", // Zappa zip bucket,
         "slim_handler": false, // Useful if project >50M. Set true to just upload a small handler to Lambda and load actual project from S3 at runtime. Default false.
         "settings_file": "~/Projects/MyApp/settings/dev_settings.py", // Server side settings file location,
+        "tags": { // Attach additional tags to AWS Resources
+            "Key": "Value",  // Example Key and value
+            "Key2": "Value2",
+            },
         "timeout_seconds": 30, // Maximum lifespan for the Lambda function (default 30, max 300.)
-        "touch": false, // GET the production URL upon initial deployment (default True)
+        "touch": true, // GET the production URL upon initial deployment (default True)
         "use_precompiled_packages": true, // If possible, use C-extension packages which have been pre-compiled for AWS Lambda. Default true.
         "vpc_config": { // Optional VPC configuration for Lambda function
             "SubnetIds": [ "subnet-12345678" ], // Note: not all availability zones support Lambda!
@@ -743,7 +821,12 @@ The file's contents should then be sourced in e.g. ~/.bashrc.
 
 ##### API Key
 
-You can use the `api_key_required` setting to generate and assign an API key to all the routes of your API Gateway. After redeployment, you can then pass the provided key as a header called `x-api-key` to access the restricted endpoints. Without the `x-api-key` header, you will receive a 403. You'll also need to manually associate this API key with your usage plan in the AWS console. [More information on API keys in the API Gateway](http://docs.aws.amazon.com/apigateway/latest/developerguide/how-to-api-keys.html).
+You can use the `api_key_required` setting to generate an API key to all the routes of your API Gateway. The process is as follows:
+1. Deploy/redeploy (update won't work) and write down the *id* for the key that has been created
+2. Go to AWS console > Amazon API Gateway and
+    * select "API Keys" and find the key *value* (for example `key_value`)
+    * select "Usage Plans", create a new usage plan and link the API Key and the API that Zappa has created for you
+3. Send a request where you pass the key value as a header called `x-api-key` to access the restricted endpoints (for example with curl: `curl --header "x-api-key: key_value"`). Note that without the x-api-key header, you will receive a 403.
 
 ##### IAM Policy
 
@@ -835,15 +918,30 @@ If your project needs to be aware of the type of environment you're deployed to,
 
 If you want to use native AWS Lambda environment variables you can use the `aws_environment_variables` configuration setting. These are useful as you can easily change them via the AWS Lambda console or cli at runtime. They are also useful for storing sensitive credentials and to take advantage of KMS encryption of environment variables.
 
-Any environment variables that you have set outside of Zappa (via AWS Lambda console or cli) will remain as they are when running `update`, unless they are also in `aws_environment_variables`, in which case the remote value will be overwritten by the one in the settings file.
 
-If you are using KMS-encrypted AWS environment variables, you can set your KMS Key ARN in the `aws_kms_key_arn` setting. Make sure that the values you set are encrypted in such case.
+During development, you can add your Zappa defined variables to your locally running app by, for example, using the below (for Django, to manage.py).
+
+```python
+if 'SERVERTYPE' in os.environ and os.environ['SERVERTYPE'] == 'AWS Lambda':
+    import json
+    import os
+    json_data = open('zappa_settings.json')
+    env_vars = json.load(json_data)['dev']['environment_variables']
+    for key, val in env_vars.items():
+        os.environ[key] = val
+
+```
+
+##### Remote Environment Variables
+
+Any environment variables that you have set outside of Zappa (via AWS Lambda console or cli) will remain as they are when running `update`, unless they are also in `aws_environment_variables`, in which case the remote value will be overwritten by the one in the settings file. If you are using KMS-encrypted AWS environment variables, you can set your KMS Key ARN in the `aws_kms_key_arn` setting. Make sure that the values you set are encrypted in such case.
 
 _Note: if you rely on these as well as `environment_variables`, and you have the same key names, then those in `environment_variables` will take precedence as they are injected in the lambda handler._
 
 ##### Remote Environment Variables (via an S3 file)
 
 _S3 remote environment variables were added to Zappa before AWS introduced native environment variables for Lambda (via the console and cli). Before going down this route check if above make more sense for your usecase._
+
 
 If you want to use remote environment variables to configure your application (which is especially useful for things like sensitive credentials), you can create a file and place it in an S3 bucket to which your Zappa application has access to. To do this, add the `remote_env` key to zappa_settings pointing to a file containing a flat JSON object, so that each key-value pair on the object will be set as an environment variable and value whenever a new lambda instance spins up.
 
@@ -882,8 +980,8 @@ If you want to map an API Gateway context variable (http://docs.aws.amazon.com/a
 {
     "dev": {
         ...
-        "context_header_mappings": { 
-            "HTTP_header_name": "API_Gateway_context_variable" 
+        "context_header_mappings": {
+            "HTTP_header_name": "API_Gateway_context_variable"
         }
     },
     ...
@@ -896,7 +994,7 @@ For example, if you want to expose the $context.identity.cognitoIdentityId varia
 {
     "dev": {
         ...
-        "context_header_mappings": { 
+        "context_header_mappings": {
             "CognitoIdentityId": "identity.cognitoIdentityId",
             "APIStage": "stage"
         }
@@ -1006,12 +1104,12 @@ You must have already created the corresponding SNS/SQS topic/queue, and the Lam
 * [Building Serverless Microservices with Zappa and Flask](https://gun.io/blog/serverless-microservices-with-zappa-and-flask/)
 * [Zappa で Hello World するまで (Japanese)](http://qiita.com/satoshi_iwashita/items/505492193317819772c7)
 * [How to Deploy Zappa with CloudFront, RDS and VPC](https://jinwright.net/how-deploy-serverless-wsgi-app-using-zappa/)
-* [Deploy Flask-Ask to AWS Lambda with Zappa (screencast)](https://www.youtube.com/watch?v=mjWV4R2P4ks)
 * [Secure 'Serverless' File Uploads with AWS Lambda, S3, and Zappa](http://blog.stratospark.com/secure-serverless-file-uploads-with-aws-lambda-s3-zappa.html)
 * [First Steps with AWS Lambda, Zappa and Python](https://andrich.blog/2017/02/12/first-steps-with-aws-lambda-zappa-flask-and-python/)
 * [Deploy a Serverless WSGI App using Zappa, CloudFront, RDS, and VPC](https://docs.google.com/presentation/d/1aYeOMgQl4V_fFgT5VNoycdXtob1v6xVUWlyxoTEiTw0/edit#slide=id.p)
 * [AWS: Deploy Alexa Ask Skills with Flask-Ask and Zappa](https://developer.amazon.com/blogs/post/8e8ad73a-99e9-4c0f-a7b3-60f92287b0bf/New-Alexa-Tutorial-Deploy-Flask-Ask-Skills-to-AWS-Lambda-with-Zappa)
 * [Guide to using Django with Zappa](https://edgarroman.github.io/zappa-django-guide/)
+* [Apex and WWW Domains with Zappa](http://sciencestuff.xperiment.mobi/2017/08/09/apex-and-www-domains-with-pythons-zappa-https/)
 * _Your guide here?_
 
 ## Zappa in the Press
@@ -1045,15 +1143,18 @@ Are you using Zappa? Let us know and we'll list your site here!
 * [Mackenzie](http://github.com/Miserlou/Mackenzie) - AWS Lambda Infection Toolkit
 * [NoDB](https://github.com/Miserlou/NoDB) - A simple, server-less, Pythonic object store based on S3.
 * [zappa-cms](http://github.com/Miserlou/zappa-cms) - A tiny server-less CMS for busy hackers. Work in progress.
+* [zappa-django-utils](https://github.com/Miserlou/zappa-django-utils) - Utility commands to help Django deployments.
 * [flask-ask](https://github.com/johnwheeler/flask-ask) - A framework for building Amazon Alexa applications. Uses Zappa for deployments.
 * [zappa-file-widget](https://github.com/anush0247/zappa-file-widget) - A Django plugin for supporting binary file uploads in Django on Zappa.
 * [zops](https://github.com/bjinwright/zops) - Utilities for teams and continuous integrations using Zappa.
 * [cookiecutter-mobile-backend](https://github.com/narfman0/cookiecutter-mobile-backend/) - A `cookiecutter` Django project with Zappa and S3 uploads support.
 * [zappa-examples](https://github.com/narfman0/zappa-examples/) - Flask, Django, image uploads, and more!
+* [zappa-hug-example](https://github.com/mcrowson/zappa-hug-example) - Example of a Hug application using Zappa.
 * [Zappa Docker Image](https://github.com/danielwhatmuff/zappa) - A Docker image for running Zappa locally, based on Lambda Docker.
 * [zappa-dashing](https://github.com/nikos/zappa-dashing) - Monitor your AWS environment (health/metrics) with Zappa and CloudWatch.
 * [s3env](https://github.com/cameronmaske/s3env) - Manipulate a remote Zappa environment variable key/value JSON object file in an S3 bucket through the CLI.
 * [zappa_resize_image_on_fly](https://github.com/wobeng/zappa_resize_image_on_fly) - Resize images on the fly using Flask, Zappa, Pillow, and OpenCV-python.
+* [zappa-ffmpeg](https://github.com/ubergarm/zappa-ffmpeg) - Run ffmpeg inside a lambda for serverless transformations. 
 * [gdrive-lambda](https://github.com/richiverse/gdrive-lambda) - pass json data to a csv file for end users who use Gdrive across the organization.
 * [travis-build-repeat](https://github.com/bcongdon/travis-build-repeat) - Repeat TravisCI builds to avoid stale test results.
 * [wunderskill-alexa-skill](https://github.com/mcrowson/wunderlist-alexa-skill) - An Alexa skill for adding to a Wunderlist.
@@ -1096,8 +1197,16 @@ Zappa is currently supported by these awesome individuals and companies:
   * Nathan Lawrence
   * LaunchLab
   * Sean Paley
+  * Theo Chitayat
 
 Thank you very, very much!
+
+## Merch
+
+<br />
+<p align="center">
+  <a href="https://blog.zappa.io/posts/weve-got-merch-now-introducing-zappa-tshirts"><img src="https://i.imgur.com/jYZ7aUR.png" alt="Merch!"/></a>
+</p>
 
 ## Support / Development / Training / Consulting
 

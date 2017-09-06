@@ -214,7 +214,9 @@ class Zappa(object):
             aws_region=None,
             load_credentials=True,
             desired_role_name=None,
-            runtime='python2.7'
+            runtime='python2.7',
+            tags=(),
+            endpoint_urls={}
         ):
         # Set aws_region to None to use the system's region instead
         if aws_region is None:
@@ -234,6 +236,7 @@ class Zappa(object):
         else:
             self.manylinux_wheel_file_suffix = 'cp36m-manylinux1_x86_64.whl'
 
+        self.endpoint_urls = endpoint_urls
 
         # Some common invokations, such as DB migrations,
         # can take longer than the default.
@@ -252,24 +255,39 @@ class Zappa(object):
             self.load_credentials(boto_session, profile_name)
 
             # Initialize clients
-            self.s3_client = self.boto_session.client('s3')
-            self.lambda_client = self.boto_session.client('lambda', config=long_config)
-            self.events_client = self.boto_session.client('events')
-            self.apigateway_client = self.boto_session.client('apigateway')
+            self.s3_client = self.boto_client('s3')
+            self.lambda_client = self.boto_client('lambda', config=long_config)
+            self.events_client = self.boto_client('events')
+            self.apigateway_client = self.boto_client('apigateway')
             # acm certificates need to be created from us-east-1 to be used by API gateway
             east_config = botocore.client.Config(region_name='us-east-1')
-            self.acm_client = self.boto_session.client('acm', config=east_config)
-            self.logs_client = self.boto_session.client('logs')
-            self.iam_client = self.boto_session.client('iam')
-            self.iam = self.boto_session.resource('iam')
-            self.cloudwatch = self.boto_session.client('cloudwatch')
-            self.route53 = self.boto_session.client('route53')
-            self.sns_client = self.boto_session.client('sns')
-            self.cf_client = self.boto_session.client('cloudformation')
+            self.acm_client = self.boto_client('acm', config=east_config)
+            self.logs_client = self.boto_client('logs')
+            self.iam_client = self.boto_client('iam')
+            self.iam = self.boto_resource('iam')
+            self.cloudwatch = self.boto_client('cloudwatch')
+            self.route53 = self.boto_client('route53')
+            self.sns_client = self.boto_client('sns')
+            self.cf_client = self.boto_client('cloudformation')
+            self.dynamodb_client = self.boto_client('dynamodb')
 
+        self.tags = tags
         self.cf_template = troposphere.Template()
         self.cf_api_resources = []
         self.cf_parameters = {}
+
+    def configure_boto_session_method_kwargs(self, service, kw):
+        if service in self.endpoint_urls and not 'endpoint_url' in kw:
+            kw['endpoint_url'] = self.endpoint_urls[service]
+        return kw
+
+    def boto_client(self, service, *args, **kwargs):
+        """A wrapper to apply configuration options to boto clients"""
+        return self.boto_session.client(service, *args, **self.configure_boto_session_method_kwargs(service, kwargs))
+
+    def boto_resource(self, service, *args, **kwargs):
+        """A wrapper to apply configuration options to boto resources"""
+        return self.boto_session.resource(service, *args, **self.configure_boto_session_method_kwargs(service, kwargs))
 
     def cache_param(self, value):
         '''Returns a troposphere Ref to a value cached as a parameter.'''
@@ -277,7 +295,7 @@ class Zappa(object):
         if value not in self.cf_parameters:
             keyname = chr(ord('A') + len(self.cf_parameters))
             param = self.cf_template.add_parameter(troposphere.Parameter(
-                keyname, Type="String", Default=value
+                keyname, Type="String", Default=value, tags=self.tags
             ))
 
             self.cf_parameters[value] = param
@@ -387,7 +405,8 @@ class Zappa(object):
                             include=None,
                             venv=None,
                             output=None,
-                            disable_progress=False
+                            disable_progress=False,
+                            archive_format='zip'
                         ):
         """
         Create a Lambda-ready zip file of the current virtualenvironment and working directory.
@@ -395,6 +414,10 @@ class Zappa(object):
         Returns path to that file.
 
         """
+        # Validate archive_format
+        if archive_format not in ['zip', 'tarball']:
+            raise KeyError("The archive format to create a lambda package must be zip or tarball")
+
         # Pip is a weird package.
         # Calling this function in some environments without this can cause.. funkiness.
         import pip
@@ -404,17 +427,20 @@ class Zappa(object):
 
         cwd = os.getcwd()
         if not output:
-            zip_fname = prefix + '-' + str(int(time.time())) + '.zip'
+            if archive_format == 'zip':
+                archive_fname = prefix + '-' + str(int(time.time())) + '.zip'
+            elif archive_format == 'tarball':
+                archive_fname = prefix + '-' + str(int(time.time())) + '.tar.gz'
         else:
-            zip_fname = output
-        zip_path = os.path.join(cwd, zip_fname)
+            archive_fname = output
+        archive_path = os.path.join(cwd, archive_fname)
 
         # Files that should be excluded from the zip
         if exclude is None:
             exclude = list()
 
         # Exclude the zip itself
-        exclude.append(zip_path)
+        exclude.append(archive_path)
 
         # Make sure that 'concurrent' is always forbidden.
         # https://github.com/Miserlou/Zappa/issues/827
@@ -521,15 +547,20 @@ class Zappa(object):
                 print(e)
                 # XXX - What should we do here?
 
-        # Then zip it all up..
-        print("Packaging project as zip..")
-        try:
-            # import zlib
-            compression_method = zipfile.ZIP_DEFLATED
-        except ImportError:  # pragma: no cover
-            compression_method = zipfile.ZIP_STORED
+        # Then archive it all up..
+        if archive_format == 'zip':
+            print("Packaging project as zip.")
 
-        zipf = zipfile.ZipFile(zip_path, 'w', compression_method)
+            try:
+                compression_method = zipfile.ZIP_DEFLATED
+            except ImportError:  # pragma: no cover
+                compression_method = zipfile.ZIP_STORED
+            archivef = zipfile.ZipFile(archive_path, 'w', compression_method)
+
+        elif archive_format == 'tarball':
+            print("Packaging project as gzipped tarball.")
+            archivef = tarfile.open(archive_path, 'w|gz')
+
         for root, dirs, files in os.walk(temp_project_path):
 
             for filename in files:
@@ -561,13 +592,23 @@ class Zappa(object):
                 # Related: https://github.com/Miserlou/Zappa/issues/682
                 os.chmod(os.path.join(root, filename),  0o755)
 
-                # Actually put the file into the proper place in the zip
-                # Related: https://github.com/Miserlou/Zappa/pull/716
-                zipi = zipfile.ZipInfo(os.path.join(root.replace(temp_project_path, '').lstrip(os.sep), filename))
-                zipi.create_system = 3
-                zipi.external_attr = 0o755 << int(16) # Is this P2/P3 functional?
-                with open(os.path.join(root, filename), 'rb') as f:
-                    zipf.writestr(zipi, f.read(), compression_method)
+                if archive_format == 'zip':
+                    # Actually put the file into the proper place in the zip
+                    # Related: https://github.com/Miserlou/Zappa/pull/716
+                    zipi = zipfile.ZipInfo(os.path.join(root.replace(temp_project_path, '').lstrip(os.sep), filename))
+                    zipi.create_system = 3
+                    zipi.external_attr = 0o755 << int(16) # Is this P2/P3 functional?
+                    with open(os.path.join(root, filename), 'rb') as f:
+                        archivef.writestr(zipi, f.read(), compression_method)
+                elif archive_format == 'tarball':
+                    tarinfo = tarfile.TarInfo(os.path.join(root.replace(temp_project_path, '').lstrip(os.sep), filename))
+                    tarinfo.mode = 0o755
+
+                    stat = os.stat(os.path.join(root, filename))
+                    tarinfo.mtime = stat.st_mtime
+                    tarinfo.size = stat.st_size
+                    with open(os.path.join(root, filename), 'rb') as f:
+                        archivef.addfile(tarinfo, f)
 
             # Create python init file if it does not exist
             # Only do that if there are sub folders or python files and does not conflict with a neighbouring module
@@ -580,12 +621,16 @@ class Zappa(object):
                     tmp_init = os.path.join(temp_project_path, '__init__.py')
                     open(tmp_init, 'a').close()
                     os.chmod(tmp_init,  0o755)
-                    zipf.write(tmp_init,
-                               os.path.join(root.replace(temp_project_path, ''),
-                                            os.path.join(root.replace(temp_project_path, ''), '__init__.py')))
+
+                    arcname = os.path.join(root.replace(temp_project_path, ''),
+                                           os.path.join(root.replace(temp_project_path, ''), '__init__.py'))
+                    if archive_format == 'zip':
+                        archivef.write(tmp_init, arcname)
+                    elif archive_format == 'tarball':
+                        archivef.add(tmp_init, arcname)
 
         # And, we're done!
-        zipf.close()
+        archivef.close()
 
         # Trash the temp directory
         shutil.rmtree(temp_project_path)
@@ -594,7 +639,7 @@ class Zappa(object):
             # Remove the temporary handler venv folder
             shutil.rmtree(venv)
 
-        return zip_fname
+        return archive_fname
 
     def extract_lambda_package(self, package_name, path):
         """
@@ -740,6 +785,12 @@ class Zappa(object):
                     CreateBucketConfiguration={'LocationConstraint': self.aws_region},
                 )
 
+        if self.tags:
+            tags = {
+                'TagSet': [{'Key': key, 'Value': self.tags[key]} for key in self.tags.keys()]
+            }
+            self.s3_client.put_bucket_tagging(Bucket=bucket_name, Tagging=tags)
+
         if not os.path.isfile(source_path) or os.stat(source_path).st_size == 0:
             print("Problem with source file {}".format(source_path))
             return False
@@ -873,7 +924,12 @@ class Zappa(object):
             KMSKeyArn=aws_kms_key_arn
         )
 
-        return response['FunctionArn']
+        resource_arn = response['FunctionArn']
+
+        if self.tags:
+            self.lambda_client.tag_resource(Resource=resource_arn, Tags=self.tags)
+
+        return resource_arn
 
     def update_lambda_function(self, bucket, s3_key, function_name, publish=True):
         """
@@ -914,15 +970,14 @@ class Zappa(object):
             self.get_credentials_arn()
         if not aws_kms_key_arn:
             aws_kms_key_arn = ''
-
         if not aws_environment_variables:
             aws_environment_variables = {}
-        else:
-            # Get any remote aws lambda env vars so they don't get trashed
-            # Related: https://github.com/Miserlou/Zappa/issues/765
-            lambda_aws_environment_variables = self.lambda_client\
-                .get_function_configuration(FunctionName=function_name)["Environment"].get("Variables", {})
 
+        # Check if there are any remote aws lambda env vars so they don't get trashed.
+        # https://github.com/Miserlou/Zappa/issues/987,  Related: https://github.com/Miserlou/Zappa/issues/765
+        lambda_aws_config = self.lambda_client.get_function_configuration(FunctionName=function_name)
+        if "Environment" in lambda_aws_config:
+            lambda_aws_environment_variables = lambda_aws_config["Environment"].get("Variables", {})
             # Append keys that are remote but not in settings file
             for key, value in lambda_aws_environment_variables.items():
                 if key not in aws_environment_variables:
@@ -1291,7 +1346,7 @@ class Zappa(object):
 
         return "https://{}.execute-api.{}.amazonaws.com/{}".format(api_id, self.boto_session.region_name, stage_name)
 
-    def add_binary_support(self, api_id):
+    def add_binary_support(self, api_id, cors=False):
             """
             Add binary support
             """
@@ -1309,7 +1364,30 @@ class Zappa(object):
                     ]
                 )
 
-    def remove_binary_support(self, api_id):
+            if cors:
+                # fix for issue 699 and 1035, cors+binary support don't work together
+                # go through each resource and update the contentHandling type
+                response = self.apigateway_client.get_resources(restApiId=api_id)
+                resource_ids = [
+                    item['id'] for item in response['items']
+                    if 'OPTIONS' in item.get('resourceMethods', {})
+                ]
+
+                for resource_id in resource_ids:
+                    self.apigateway_client.update_integration(
+                        restApiId=api_id,
+                        resourceId=resource_id,
+                        httpMethod='OPTIONS',
+                        patchOperations=[
+                            {
+                                "op": "replace",
+                                "path": "/contentHandling",
+                                "value": "CONVERT_TO_TEXT"
+                            }
+                        ]
+                    )
+
+    def remove_binary_support(self, api_id, cors=False):
         """
         Remove binary support
         """
@@ -1326,6 +1404,27 @@ class Zappa(object):
                     }
                 ]
             )
+        if cors:
+            # go through each resource and change the contentHandling type
+            response = self.apigateway_client.get_resources(restApiId=api_id)
+            resource_ids = [
+                item['id'] for item in response['items']
+                if 'OPTIONS' in item.get('resourceMethods', {})
+            ]
+
+            for resource_id in resource_ids:
+                self.apigateway_client.update_integration(
+                    restApiId=api_id,
+                    resourceId=resource_id,
+                    httpMethod='OPTIONS',
+                    patchOperations=[
+                        {
+                            "op": "replace",
+                            "path": "/contentHandling",
+                            "value": ""
+                        }
+                    ]
+                )
 
     def get_api_keys(self, api_id, stage_name):
         """
@@ -1536,7 +1635,10 @@ class Zappa(object):
         self.upload_to_s3(template, working_bucket, disable_progress=disable_progress)
 
         url = 'https://s3.amazonaws.com/{0}/{1}'.format(working_bucket, template)
-        tags = [{'Key':'ZappaProject','Value':name}]
+        tags = [{'Key': key, 'Value': self.tags[key]}
+                for key in self.tags.keys()
+                if key != 'ZappaProject']
+        tags.append({'Key':'ZappaProject','Value':name})
         update = True
 
         try:
@@ -1988,7 +2090,6 @@ class Zappa(object):
             expression = event.get('expression', None) # single expression
             expressions = event.get('expressions', None) # multiple expression
             event_source = event.get('event_source', None)
-            name = self.get_scheduled_event_name(event, function, lambda_name)
             description = event.get('description', function)
 
             #   - If 'cron' or 'rate' in expression, use ScheduleExpression
@@ -2002,7 +2103,8 @@ class Zappa(object):
                 expressions = [expression] # same code for single and multiple expression
 
             if expressions:
-                for expression in expressions:
+                for index, expression in enumerate(expressions):
+                    name = self.get_scheduled_event_name(event, function, lambda_name, index)
                     # if it's possible that we truncated name, generate a unique, shortened name
                     # https://github.com/Miserlou/Zappa/issues/970
                     if len(name) >= 64:
@@ -2073,12 +2175,17 @@ class Zappa(object):
 
 
     @staticmethod
-    def get_scheduled_event_name(event, function, lambda_name):
+    def get_scheduled_event_name(event, function, lambda_name, index=0):
         name = event.get('name', function)
         if name != function:
             # a custom event name has been provided, make sure function name is included as postfix,
             # otherwise zappa's handler won't be able to locate the function.
             name = '{}-{}'.format(name, function)
+        if index:
+            # to ensure unique cloudwatch rule names in the case of multiple expressions
+            # prefix all entries bar the first with the index
+            # Related: https://github.com/Miserlou/Zappa/pull/1051
+            name = '{}-{}'.format(index, name)
         # prefix scheduled event names with lambda name. So we can look them up later via the prefix.
         return Zappa.get_event_name(lambda_name, name)
 
@@ -2227,6 +2334,74 @@ class Zappa(object):
         """
         Remove the async SNS topic.
         """
+        topic_name = get_topic_name(lambda_name)
+        removed_arns = []
+        for sub in self.sns_client.list_subscriptions()['Subscriptions']:
+            if topic_name in sub['TopicArn']:
+                self.sns_client.delete_topic(TopicArn=sub['TopicArn'])
+                removed_arns.append(sub['TopicArn'])
+        return removed_arns
+
+
+    ###
+    # Async / DynamoDB
+    ##
+
+    def _set_async_dynamodb_table_ttl(self, table_name):
+        self.dynamodb_client.update_time_to_live(
+            TableName=table_name,
+            TimeToLiveSpecification={
+                'Enabled': True,
+                'AttributeName': 'ttl'
+            }
+        )
+
+
+    def create_async_dynamodb_table(self, table_name, read_capacity, write_capacity):
+        """
+        Create the DynamoDB table for async task return values
+        """
+        try:
+            dynamodb_table = self.dynamodb_client.describe_table(TableName=table_name)
+            return False, dynamodb_table
+
+        # catch this exception (triggered if the table doesn't exist)
+        except botocore.exceptions.ClientError:
+            dynamodb_table = self.dynamodb_client.create_table(
+                AttributeDefinitions=[
+                    {
+                        'AttributeName': 'id',
+                        'AttributeType': 'S'
+                    }
+                ],
+                TableName=table_name,
+                KeySchema=[
+                    {
+                        'AttributeName': 'id',
+                        'KeyType': 'HASH'
+                    },
+                ],
+                ProvisionedThroughput = {
+                    'ReadCapacityUnits': read_capacity,
+                    'WriteCapacityUnits': write_capacity
+                }
+            )
+            if dynamodb_table:
+                try:
+                    self._set_async_dynamodb_table_ttl(table_name)
+                except botocore.exceptions.ClientError:
+                    # this fails because the operation is async, so retry
+                    time.sleep(10)
+                    self._set_async_dynamodb_table_ttl(table_name)
+
+        return True, dynamodb_table
+
+
+    def remove_async_dynamodb_table(self, table_name):
+        """
+        Remove the DynamoDB Table used for async return values
+        """
+
         topic_name = get_topic_name(lambda_name)
         removed_arns = []
         for sub in self.sns_client.list_subscriptions()['Subscriptions']:

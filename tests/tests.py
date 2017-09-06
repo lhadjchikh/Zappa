@@ -309,6 +309,27 @@ class TestZappa(unittest.TestCase):
             end_result_should_be = {"REMOTE_ONLY": "AAA", "CHANGED_REMOTE" : "ZZ", "LOCAL_ONLY" : "YY"}
             self.assertEqual(mock_client.update_function_configuration.call_args[1]["Environment"], { "Variables": end_result_should_be})
 
+        with mock.patch.object(z, "lambda_client") as mock_client:
+            # Simulate already having some AWS env vars remotely but none set in aws_environment_variables
+            mock_client.get_function_configuration.return_value = {
+                "Environment": {"Variables": {"REMOTE_ONLY_1": "AAA", "REMOTE_ONLY_2": "BBB"}}}
+            z.update_lambda_configuration("test", "test", "test")
+            end_result_should_be = {"REMOTE_ONLY_1": "AAA", "REMOTE_ONLY_2": "BBB"}
+            self.assertEqual(mock_client.update_function_configuration.call_args[1]["Environment"],
+                             {"Variables": end_result_should_be})
+
+    def test_update_empty_aws_env_hash(self):
+        z = Zappa()
+        z.credentials_arn = object()
+
+        with mock.patch.object(z, "lambda_client") as mock_client:
+            # Simulate having no AWS env vars remotely
+            mock_client.get_function_configuration.return_value = {}
+            z.update_lambda_configuration("test", "test", "test", aws_environment_variables={"LOCAL_ONLY" : "LZ", "SHOW_AND_TELL" : "SHA"})
+            end_result_should_be = {"LOCAL_ONLY" : "LZ", "SHOW_AND_TELL" : "SHA"}
+            self.assertEqual(mock_client.update_function_configuration.call_args[1]["Environment"], { "Variables": end_result_should_be})
+
+
     ##
     # Logging
     ##
@@ -786,6 +807,10 @@ class TestZappa(unittest.TestCase):
         zappa_cli.print_logs(logs, colorize=True, non_http=False)
         zappa_cli.print_logs(logs, colorize=True, non_http=True, http=True)
         zappa_cli.print_logs(logs, colorize=True, non_http=False, http=False)
+        zappa_cli.print_logs(logs, colorize=False, force_colorize=False)
+        zappa_cli.print_logs(logs, colorize=False, force_colorize=True)
+        zappa_cli.print_logs(logs, colorize=True, force_colorize=False)
+        zappa_cli.print_logs(logs, colorize=True, non_http=False, http=False, force_colorize=True)
         zappa_cli.check_for_update()
 
     def test_cli_format_invoke_command(self):
@@ -1653,7 +1678,7 @@ USE_TZ = True
 
             # validate environment variables
             self.assertIn('ENVIRONMENT_VARIABLES', settings)
-            self.assertEqual(settings['ENVIRONMENT_VARIABLES'][b'TEST_ENV_VAR'], "test_value")
+            self.assertEqual(settings['ENVIRONMENT_VARIABLES']['TEST_ENV_VAR'], "test_value")
 
             # validate Context header mappings
             self.assertIn('CONTEXT_HEADER_MAPPINGS', settings)
@@ -1661,6 +1686,14 @@ USE_TZ = True
             self.assertEqual(settings['CONTEXT_HEADER_MAPPINGS']['APIStage'], "stage")
 
         zappa_cli.remove_local_zip()
+
+    def test_only_ascii_env_var_allowed(self):
+        zappa_cli = ZappaCLI()
+        zappa_cli.api_stage = 'ttt888'
+        zappa_cli.load_settings('tests/test_non_ascii_environment_var_key.json')
+        with self.assertRaises(ValueError) as context:
+            zappa_cli.create_package()
+        self.assertEqual('Environment variable keys must be ascii.', str(context.exception))
 
 
 

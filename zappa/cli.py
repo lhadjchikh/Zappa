@@ -113,6 +113,7 @@ class ZappaCLI(object):
     authorizer = None
     aws_kms_key_arn = ''
     context_header_mappings = None
+    tags = []
 
     stage_name_env_pattern = re.compile('^[a-zA-Z0-9_]+$')
 
@@ -375,6 +376,10 @@ class ZappaCLI(object):
             '--filter', type=str, default="",
             help="Apply a filter pattern to the logs."
         )
+        tail_parser.add_argument(
+            '--force-color', action='store_true',
+            help='Force coloring log tail output even if coloring support is note auto-detected. (example: piping)'
+        )
 
         ##
         # Undeploy
@@ -559,6 +564,7 @@ class ZappaCLI(object):
                 non_http=self.vargs['non_http'],
                 since=self.vargs['since'],
                 filter_pattern=self.vargs['filter'],
+                force_colorize=self.vargs['force_color'] or None,
             )
         elif command == 'undeploy': # pragma: no cover
             self.undeploy(
@@ -690,7 +696,7 @@ class ZappaCLI(object):
                 raise ClickException("Unable to upload handler to S3. Quitting.")
 
             # Copy the project zip to the current project zip
-            current_project_name = '{0!s}_current_project.zip'.format(self.project_name)
+            current_project_name = '{0!s}_current_project.tar.gz'.format(self.project_name)
             success = self.zappa.copy_on_s3(src_file_name=self.zip_path, dst_file_name=current_project_name,
                                             bucket_name=self.s3_bucket_name)
             if not success:  # pragma: no cover
@@ -752,7 +758,7 @@ class ZappaCLI(object):
 
             # Add binary support
             if self.binary_support:
-                self.zappa.add_binary_support(api_id=api_id)
+                self.zappa.add_binary_support(api_id=api_id, cors=self.cors)
 
             # Deploy the API!
             endpoint_url = self.deploy_api_gateway(api_id)
@@ -798,6 +804,9 @@ class ZappaCLI(object):
             conf = function_response['Configuration']
             last_updated = parser.parse(conf['LastModified'])
             last_updated_unix = time.mktime(last_updated.timetuple())
+        except botocore.exceptions.BotoCoreError as e:
+            click.echo(click.style(type(e).__name__, fg="red") + ": " + e.args[0])
+            sys.exit(-1)
         except Exception as e:
             click.echo(click.style("Warning!", fg="red") + " Couldn't get function " + self.lambda_name +
                        " in " + self.zappa.aws_region + " - have you deployed yet?")
@@ -838,7 +847,7 @@ class ZappaCLI(object):
                 raise ClickException("Unable to upload handler to S3. Quitting.")
 
             # Copy the project zip to the current project zip
-            current_project_name = '{0!s}_current_project.zip'.format(self.project_name)
+            current_project_name = '{0!s}_current_project.tar.gz'.format(self.project_name)
             success = self.zappa.copy_on_s3(src_file_name=self.zip_path, dst_file_name=current_project_name,
                                             bucket_name=self.s3_bucket_name)
             if not success:  # pragma: no cover
@@ -899,9 +908,9 @@ class ZappaCLI(object):
 
             # update binary support
             if self.binary_support:
-                self.zappa.add_binary_support(api_id=api_id)
+                self.zappa.add_binary_support(api_id=api_id, cors=self.cors)
             else:
-                self.zappa.remove_binary_support(api_id=api_id)
+                self.zappa.remove_binary_support(api_id=api_id, cors=self.cors)
 
             endpoint_url = self.deploy_api_gateway(api_id)
 
@@ -951,7 +960,7 @@ class ZappaCLI(object):
             self.lambda_name, versions_back=revision)
         print("Done!")
 
-    def tail(self, since, filter_pattern, limit=10000, keep_open=True, colorize=True, http=False, non_http=False):
+    def tail(self, since, filter_pattern, limit=10000, keep_open=True, colorize=True, http=False, non_http=False, force_colorize=False):
         """
         Tail this function's logs.
 
@@ -971,7 +980,7 @@ class ZappaCLI(object):
                     )
 
                 new_logs = [ e for e in new_logs if e['timestamp'] > last_since ]
-                self.print_logs(new_logs, colorize, http, non_http)
+                self.print_logs(new_logs, colorize, http, non_http, force_colorize)
 
                 if not keep_open:
                     break
@@ -1071,6 +1080,25 @@ class ZappaCLI(object):
                 lambda_arn=self.lambda_arn
             )
             click.echo('SNS Topic created: %s' % topic_arn)
+
+        # Add async tasks DynamoDB
+        table_name = self.stage_config.get('async_response_table', False)
+        read_capacity = self.stage_config.get('async_response_table_read_capacity', 1)
+        write_capacity = self.stage_config.get('async_response_table_write_capacity', 1)
+        if table_name and self.stage_config.get('async_resources', True):
+            created, response_table = self.zappa.create_async_dynamodb_table(
+                table_name, read_capacity, write_capacity)
+            if created:
+                click.echo('DynamoDB table created: %s' % table_name)
+            else:
+                click.echo('DynamoDB table exists: %s' % table_name)
+                provisioned_throughput = response_table['Table']['ProvisionedThroughput']
+                if provisioned_throughput['ReadCapacityUnits'] != read_capacity or \
+                    provisioned_throughput['WriteCapacityUnits'] != write_capacity:
+                        click.echo(click.style(
+                            "\nWarning! Existing DynamoDB table ({}) does not match configured capacity.\n".format(table_name),
+                            fg='red'
+                        ))
 
     def unschedule(self):
         """
@@ -1663,10 +1691,10 @@ class ZappaCLI(object):
             # Get install account_key to /tmp/account_key.pem
             if account_key_location.startswith('s3://'):
                 bucket, key_name = parse_s3_url(account_key_location)
-                self.zappa.s3_client.download_file(bucket, key_name, '/tmp/account.key')
+                self.zappa.s3_client.download_file(bucket, key_name, '{}/account.key'.format(tempfile.gettempdir()))
             else:
                 from shutil import copyfile
-                copyfile(account_key_location, '/tmp/account.key')
+                copyfile(account_key_location, '{}/account.key'.format(tempfile.gettempdir()))
 
         # Prepare for Custom SSL
         elif not account_key_location and not cert_arn:
@@ -1914,13 +1942,18 @@ class ZappaCLI(object):
         self.aws_kms_key_arn = self.stage_config.get('aws_kms_key_arn', '')
         self.context_header_mappings = self.stage_config.get('context_header_mappings', {})
 
+        # Additional tags
+        self.tags = self.stage_config.get('tags', {})
+
         desired_role_name = self.lambda_name + "-ZappaLambdaExecutionRole"
         self.zappa = Zappa( boto_session=session,
                             profile_name=self.profile_name,
                             aws_region=self.aws_region,
                             load_credentials=self.load_credentials,
                             desired_role_name=desired_role_name,
-                            runtime=self.runtime
+                            tags=self.tags,
+                            runtime=self.runtime,
+                            endpoint_urls=self.stage_config.get('aws_endpoint_urls',{})
                         )
 
         for setting in CUSTOM_SETTINGS:
@@ -2016,7 +2049,8 @@ class ZappaCLI(object):
                 prefix=self.lambda_name,
                 use_precompiled_packages=self.stage_config.get('use_precompiled_packages', True),
                 exclude=self.stage_config.get('exclude', []),
-                disable_progress=self.disable_progress
+                disable_progress=self.disable_progress,
+                archive_format='tarball'
             )
 
             # Make sure the normal venv is not included in the handler's zip
@@ -2140,12 +2174,13 @@ class ZappaCLI(object):
                 env_dict['AWS_REGION'] = self.aws_region
             env_dict.update(dict(self.environment_variables))
 
-            # Environment variable keys can't be Unicode
+            # Environment variable keys must be ascii
             # https://github.com/Miserlou/Zappa/issues/604
+            # https://github.com/Miserlou/Zappa/issues/998
             try:
-                env_dict = dict((k.encode('ascii'), v) for (k, v) in env_dict.items())
-            except Exception: # pragma: no cover
-                    raise ValueError("Environment variable keys must not be unicode.")
+                env_dict = dict((k.encode('ascii').decode('ascii'), v) for (k, v) in env_dict.items())
+            except Exception:
+                raise ValueError("Environment variable keys must be ascii.")
 
             settings_s = settings_s + "ENVIRONMENT_VARIABLES={0}\n".format(
                     env_dict
@@ -2168,7 +2203,7 @@ class ZappaCLI(object):
 
             # If slim handler, path to project zip
             if self.stage_config.get('slim_handler', False):
-                settings_s += "ZIP_PATH='s3://{0!s}/{1!s}_current_project.zip'\n".format(self.s3_bucket_name, self.project_name)
+                settings_s += "ARCHIVE_PATH='s3://{0!s}/{1!s}_current_project.tar.gz'\n".format(self.s3_bucket_name, self.project_name)
 
                 # since includes are for slim handler add the setting here by joining arbitrary list from zappa_settings file
                 # and tell the handler we are the slim_handler
@@ -2194,13 +2229,16 @@ class ZappaCLI(object):
             if authorizer_function:
                 settings_s += "AUTHORIZER_FUNCTION='{0!s}'\n".format(authorizer_function)
 
-
             # Copy our Django app into root of our package.
             # It doesn't work otherwise.
             if self.django_settings:
                 base = __file__.rsplit(os.sep, 1)[0]
                 django_py = ''.join(os.path.join(base, 'ext', 'django_zappa.py'))
                 lambda_zip.write(django_py, 'django_zappa_app.py')
+
+            # async response
+            async_response_table = self.stage_config.get('async_response_table', '')
+            settings_s += "ASYNC_RESPONSE_TABLE='{0!s}'\n".format(async_response_table)
 
             # Lambda requires a specific chmod
             temp_settings = tempfile.NamedTemporaryFile(delete=False)
@@ -2248,7 +2286,7 @@ class ZappaCLI(object):
 
             self.remove_local_zip()
 
-    def print_logs(self, logs, colorize=True, http=False, non_http=False):
+    def print_logs(self, logs, colorize=True, http=False, non_http=False, force_colorize=None):
         """
         Parse, filter and print logs to the console.
 
@@ -2264,7 +2302,7 @@ class ZappaCLI(object):
             if "END RequestId" in message:
                 continue
 
-            if not colorize:
+            if not colorize and not force_colorize:
                 if http:
                     if self.is_http_log_entry(message.strip()):
                         print("[" + str(timestamp) + "] " + message.strip())
@@ -2276,12 +2314,12 @@ class ZappaCLI(object):
             else:
                 if http:
                     if self.is_http_log_entry(message.strip()):
-                        click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()))
+                        click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()), color=force_colorize)
                 elif non_http:
                     if not self.is_http_log_entry(message.strip()):
-                        click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()))
+                        click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()), color=force_colorize)
                 else:
-                    click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()))
+                    click.echo(click.style("[", fg='cyan') + click.style(str(timestamp), bold=True) + click.style("]", fg='cyan') + self.colorize_log_entry(message.strip()), color=force_colorize)
 
     def is_http_log_entry(self, string):
         """
