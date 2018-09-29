@@ -39,6 +39,7 @@
     - [Deploying to a Domain With Your Own SSL Certs](#deploying-to-a-domain-with-your-own-ssl-certs)
 - [Executing in Response to AWS Events](#executing-in-response-to-aws-events)
 - [Asynchronous Task Execution](#asynchronous-task-execution)
+  - [Catching Exceptions](#catching-exceptions)
   - [Task Sources](#task-sources)
   - [Direct Invocation](#direct-invocation)
   - [Remote Invocations](#remote-invocations)
@@ -64,9 +65,10 @@
     - [Remote Environment Variables](#remote-environment-variables)
     - [Remote Environment Variables (via an S3 file)](#remote-environment-variables-via-an-s3-file)
   - [API Gateway Context Variables](#api-gateway-context-variables)
-  - [Catching Unhandled Exceptions](#catching-unhandled-exceptions)
-  - [Using Custom AWS IAM Roles and Policies for Deployment](#using-custom-aws-iam-roles-and-policies-for-deployment)
-  - [Using Custom AWS IAM Roles and Policies for Execution](#using-custom-aws-iam-roles-and-policies-for-execution)
+  - [Catching Unhandled Exceptions](#catching-unhandled-exceptions)-and-policies-for-execution)
+  - [Using Custom AWS IAM Roles and Policies](#using-custom-aws-iam-roles-and-policies)
+    - [Custom AWS IAM Roles and Policies for Deployment](#custom-aws-iam-roles-and-policies-for-deployment)
+    - [Custom AWS IAM Roles and Policies for Execution](#custom-aws-iam-roles-and-policies-for-execution)
   - [AWS X-Ray](#aws-x-ray)
   - [Globally Available Server-less Architectures](#globally-available-server-less-architectures)
   - [Raising AWS Service Limits](#raising-aws-service-limits)
@@ -200,7 +202,7 @@ To explain what's going on, when you call `deploy`, Zappa will automatically pac
 
 Be aware that the default IAM role and policy created for executing Lambda applies a liberal set of permissions.
 These are most likely not appropriate for production deployment of important applications.  See the section
-[Using Custom AWS IAM Roles and Policies for Execution](#using-custom-aws-iam-roles-and-policies-for-Execution) for more detail.
+[Custom AWS IAM Roles and Policies for Execution](#custom-aws-iam-roles-and-policies-for-execution) for more detail.
 
 ### Updates
 
@@ -586,7 +588,7 @@ To get the keyword arguments you will need to look inside the event dictionary:
 
 ```python
 def your_recurring_function(event, context):
-    my_kwargs = event.get(kwargs)  # dict of kwargs given in zappa_settings file
+    my_kwargs = event.get("kwargs")  # dict of kwargs given in zappa_settings file
 
 ```
 
@@ -624,6 +626,37 @@ And that's it! Your API response will return immediately, while the `make_pie` f
 When calls to @task decorated functions or the zappa.async.run command occur outside of Lambda, such as your local dev environment,
 the functions will execute immediately and locally. The zappa async functionality only works
 when in the Lambda environment or when specifying [Remote Invocations](https://github.com/Miserlou/zappa#remote-invocations).
+
+### Catching Exceptions
+Putting a try..except block on an asynchronous task like this:
+
+```python
+@task
+def make_pie():
+    try:
+	ingredients = get_ingredients()
+	pie = bake(ingredients)
+	deliver(pie)
+	
+    except Fault as error:
+    	"""send an email"""
+	...
+	return Response('Web services down', status=503)
+```
+
+will cause an email to be sent twice for the same error. See [asynchronous retries at AWS](https://docs.aws.amazon.com/lambda/latest/dg/retries-on-errors.html). To work around this side-effect, and have the fault handler execute only once, change the return value to:
+
+```python
+@task
+def make_pie():
+    try:
+	"""code block"""
+	
+    except Fault as error:
+    	"""send an email"""
+	...
+	return {} #or return True
+```
 
 ### Task Sources
 
@@ -1159,12 +1192,14 @@ You may still need a similar exception handler inside your application, this is 
 
 By default, AWS Lambda will attempt to retry an event based (non-API Gateway, e.g. CloudWatch) invocation if an exception has been thrown. However, you can prevent this by returning True, as in example above, so Zappa that will not re-raise the uncaught exception, thus preventing AWS Lambda from retrying the current invocation.
 
-### Using Custom AWS IAM Roles and Policies for Deployment
+### Using Custom AWS IAM Roles and Policies
+
+#### Custom AWS IAM Roles and Policies for Deployment
 
 You can specify which _local_ profile to use for deploying your Zappa application by defining
 the `profile_name` setting, which will correspond to a profile in your AWS credentials file.
 
-### Using Custom AWS IAM Roles and Policies for Execution
+#### Custom AWS IAM Roles and Policies for Execution
 
 The default IAM policy created by Zappa for executing the Lambda is very permissive.
 It grants access to all actions for
@@ -1300,6 +1335,7 @@ For monitoring of different deployments, a unique UUID for each package is avail
 * [Serverless Slack Slash Commands with Python and Zappa](https://renzo.lucioni.xyz/serverless-slash-commands-with-python/)
 * [Bringing Tokusatsu to AWS using Python, Flask, Zappa and Contentful](https://www.contentful.com/blog/2018/03/07/bringing-tokusatsu-to-aws-using-python-flask-zappa-and-contentful/)
 * [AWS Summit 2018 Seoul - Zappa와 함께하는 Serverless Microservice](https://www.slideshare.net/YunSeopSong/zappa-serverless-microservice-94410308/)
+* [Book - Building Serverless Python Web Services with Zappa](https://github.com/PacktPublishing/Building-Serverless-Python-Web-Services-with-Zappa)
 * _Your guide here?_
 
 ## Zappa in the Press
@@ -1349,8 +1385,10 @@ Are you using Zappa? Let us know and we'll list your site here!
 * [travis-build-repeat](https://github.com/bcongdon/travis-build-repeat) - Repeat TravisCI builds to avoid stale test results.
 * [wunderskill-alexa-skill](https://github.com/mcrowson/wunderlist-alexa-skill) - An Alexa skill for adding to a Wunderlist.
 * [xrayvision](https://github.com/mathom/xrayvision) - Utilities and wrappers for using AWS X-Ray with Zappa.
+* [terraform-aws-zappa](https://github.com/dpetzold/terraform-aws-zappa) - Terraform modules for creating a VPC, RDS instance, ElastiCache Redis and CloudFront Distribution for use with Zappa.
 * [zappa-sentry](https://github.com/jneves/zappa-sentry) - Integration with Zappa and Sentry
 * [IOpipe](https://github.com/iopipe/iopipe-python#zappa) - Monitor, profile and analyze your Zappa apps.
+
 
 ## Hacks
 
