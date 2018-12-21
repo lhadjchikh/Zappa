@@ -102,7 +102,7 @@ class LambdaHandler(object):
                 self.load_remote_project_archive(project_archive_path)
 
 
-            # Load compliled library to the PythonPath
+            # Load compiled library to the PythonPath
             # checks if we are the slim_handler since this is not needed otherwise
             # https://github.com/Miserlou/Zappa/issues/776
             is_slim_handler = getattr(self.settings, 'SLIM_HANDLER', False)
@@ -123,17 +123,25 @@ class LambdaHandler(object):
             if not hasattr(self.settings, 'APP_MODULE') and not self.settings.DJANGO_SETTINGS:
                 self.app_module = None
                 wsgi_app_function = None
-            # This is probably a normal WSGI app
-            elif not self.settings.DJANGO_SETTINGS:
+            # This is probably a normal WSGI app (Or django with overloaded wsgi application)
+            # https://github.com/Miserlou/Zappa/issues/1164
+            elif hasattr(self.settings, 'APP_MODULE'):
+                if self.settings.DJANGO_SETTINGS:
+                    sys.path.append('/var/task')
+                    from django.conf import ENVIRONMENT_VARIABLE as SETTINGS_ENVIRONMENT_VARIABLE
+                    # add the Lambda root path into the sys.path
+                    self.trailing_slash = True
+                    os.environ[SETTINGS_ENVIRONMENT_VARIABLE] = self.settings.DJANGO_SETTINGS
+                else:
+                    self.trailing_slash = False
+
                 # The app module
                 self.app_module = importlib.import_module(self.settings.APP_MODULE)
 
                 # The application
                 wsgi_app_function = getattr(self.app_module, self.settings.APP_FUNCTION)
-                self.trailing_slash = False
             # Django gets special treatment.
             else:
-
                 try:  # Support both for tests
                     from zappa.ext.django_zappa import get_django_wsgi
                 except ImportError:  # pragma: no cover
@@ -286,7 +294,7 @@ class LambdaHandler(object):
         """
         Get the associated function to execute for a triggered AWS event
 
-        Support S3, SNS, DynamoDB and kinesis events
+        Support S3, SNS, DynamoDB, kinesis and SQS events
         """
         if 's3' in record:
             if ':' in record['s3']['configurationId']:
@@ -302,6 +310,8 @@ class LambdaHandler(object):
                 pass
             arn = record['Sns'].get('TopicArn')
         elif 'dynamodb' in record or 'kinesis' in record:
+            arn = record.get('eventSourceARN')
+        elif 'eventSource' in record and record.get('eventSource') == 'aws:sqs':
             arn = record.get('eventSourceARN')
         elif 's3' in record:
             arn = record['s3']['bucket']['arn']
@@ -403,7 +413,7 @@ class LambdaHandler(object):
             management.call_command(*event['manage'].split(' '))
             return {}
 
-        # This is an AWS-event triggered invokation.
+        # This is an AWS-event triggered invocation.
         elif event.get('Records', None):
 
             records = event.get('Records')
@@ -486,10 +496,13 @@ class LambdaHandler(object):
                         # API stage
                         script_name = '/' + settings.API_STAGE
 
+                base_path = getattr(settings, 'BASE_PATH', None)
+
                 # Create the environment for WSGI and handle the request
                 environ = create_wsgi_request(
                     event,
                     script_name=script_name,
+                    base_path=base_path,
                     trailing_slash=self.trailing_slash,
                     binary_support=settings.BINARY_SUPPORT,
                     context_header_mappings=settings.CONTEXT_HEADER_MAPPINGS
