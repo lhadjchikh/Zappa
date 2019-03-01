@@ -83,8 +83,12 @@ class TestZappa(unittest.TestCase):
             'resource': '/{proxy+}',
             'requestContext': {},
             'queryStringParameters': {},
+            'multiValueQueryStringParameters': {},
             'headers': {
                 'Host': '1234567890.execute-api.us-east-1.amazonaws.com',
+            },
+            'multiValueHeaders': {
+                'Host': ['1234567890.execute-api.us-east-1.amazonaws.com'],
             },
             'pathParameters': {
                 'proxy': 'return/request/url'
@@ -113,8 +117,12 @@ class TestZappa(unittest.TestCase):
             'resource': '/{proxy+}',
             'requestContext': {},
             'queryStringParameters': {},
+            'multiValueQueryStringParameters': {},
             'headers': {
                 'Host': 'example.com',
+            },
+            'multiValueHeaders': {
+                'Host': ['example.com'],
             },
             'pathParameters': {
                 'proxy': 'return/request/url'
@@ -143,7 +151,9 @@ class TestZappa(unittest.TestCase):
             'resource': '/{proxy+}',
             'requestContext': {},
             'queryStringParameters': {},
+            'multiValueQueryStringParameters': {},
             'headers': {},
+            'multiValueHeaders': {},
             'pathParameters': {
                 'proxy': 'return/request/url'
             },
@@ -170,8 +180,12 @@ class TestZappa(unittest.TestCase):
             'resource': '/{proxy+}',
             'requestContext': {},
             'queryStringParameters': {},
+            'multiValueQueryStringParameters': {},
             'headers': {
                 'Host': '1234567890.execute-api.us-east-1.amazonaws.com',
+            },
+            'multiValueHeaders': {
+                'Host': ['1234567890.execute-api.us-east-1.amazonaws.com'],
             },
             'pathParameters': {
                 'proxy': 'return/request/url'

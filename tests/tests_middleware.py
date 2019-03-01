@@ -86,11 +86,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
@@ -111,11 +115,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
@@ -137,11 +145,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
@@ -159,11 +171,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
@@ -185,11 +201,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
@@ -213,11 +233,15 @@ class TestWSGIMockMiddleWare(unittest.TestCase):
         event = {
             u'httpMethod': u'GET',
             u'queryStringParameters': None,
+            u'multiValueQueryStringParameters': None,
             u'path': u'/v1/runs',
             u'params': {},
             u'body': {},
             u'headers': {
                 u'Content-Type': u'application/json'
+            },
+            u'multiValueHeaders': {
+                u'Content-Type': [u'application/json']
             },
             u'pathParameters': {
                 u'proxy': 'v1/runs'
